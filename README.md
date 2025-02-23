@@ -20,3 +20,5 @@ Moreover, it has been used to process the pyrolysis GC/MS data in the following 
 [2] Hamed Majidzadeh 1, Huan Chen 1, T. Adam Coates 1, Kuo-Pei Tsai, Christopher I. Olivares, Carl C. Trettin, Habibullah Uzun, Tanju Karanfil, Alex T. Chow ‡ (2019), Long-term watershed management is an effective strategy to reduce organic matter export and disinfection byproduct precursors in source water. International Journal of Wildland Fire 28: 804-813
 
 [1] Pei-Jia Ku, Martin Tsz-Ki Tsui ‡, Xiang-Ping Nie ‡, Huan Chen, Tham C. Hoang, Joel D. Blum, Randy A. Dahlgren, Alex T. Chow (2018), Origin, reactivity, and bioavailability of mercury in wildfire ash. Environmental Science & Technology 52 (24): 14149-14157 [highlighted in "Wildfire ash could trap mercury" by ACS press release]
+
+Please feel free to contact Dr. Huan Chen if you confront issues when installing.
