@@ -1,0 +1,752 @@
+---
+title: "Automated Identification and Quatification Pipeline"
+#output: html_notebook
+---
+#Loading the R packages
+```{r}
+rm(list = ls())
+
+Sys.setenv(JAVA_HOME='C:\\Program Files\\Java\\jdk-11.0.2')
+Sys.setenv(R_ZIPCMD = "C:\\Program Files\\WinRAR\\WinRAR.exe")
+#devtools::install_github("awalker89/openxlsx")
+
+packagepath <- 'D:/Programming/R/Rpackages/'
+
+
+install1 <- function(packages){
+  new.packages <- packages[!(packages %in% installed.packages()[, "Package"])]
+  if (length(new.packages)) 
+    install.packages(new.packages,dependencies=TRUE,destdir=packagepath)
+  sapply(packages, require, character.only = TRUE)
+}
+wants1 <- c('XML','flux','qdapRegex','stringi','RMySQL',
+           'baseline','OrgMassSpecR','openxlsx','XLConnect','rJava',
+           'htmlwidgets','rgl','Rpdb','devtools','zip')
+install1(wants1)
+
+
+install2 <- function(packages) {
+  new.packages <- packages[!(packages %in% installed.packages()[, "Package"])]
+  if (length(new.packages)) 
+    biocLite(new.packages,dependencies=TRUE,destdir=packagepath)
+    #BiocManager::install(new.packages,dependencies=TRUE,site_repository=packagepath,update=T,destdir=packagepath)
+  sapply(packages, require, character.only = TRUE)  
+}
+wants2 <- c('MSnbase','Biobase','tibble',
+            'xcms','mzR','msdata','faahKO',
+            'fpc','MSeasy','baseline','RMassBank','flux','ChemmineR')
+#source("https://bioconductor.org/biocLite.R")
+BiocManager::install(wants2)
+#install2(wants2)
+
+
+#install_version("XLConnect", version = "0.2-12", repos = "http://cran.us.r-project.org")
+#install_version("XLConnectJars", version = "0.2-12", repos = "http://cran.us.r-project.org")
+
+
+#install.packages('D://Programming/R/Packages/faahKO_1.16.0.tar.gz', repos = NULL, type="source")
+#install.packages('D://Programming/R/Packages//ChemmineR_2.28.3.zip', repos = NULL, type="source")
+#install.packages('D://Programming/R/Packages/XLConnectJars_0.2-12.tar.gz', repos = NULL, type="source")
+
+```
+
+
+#Input the folders' name
+```{r}
+local1 <- 'D:/Career_13_Instrument/004PyGCMS/'
+local2 <- paste(local1,'02Rawdata/UNCG_watershed_20220419/',sep="") # Input the folder's name
+
+NISTlib <- paste(local1,'01Others/01MSP_NIST_MS_Library/',sep="")
+path01  <- paste(local2,'02CSV/',sep="")
+path02  <- 'C:/NISTDEMO/MSSEARCH/'
+path03  <- paste(local2,'03NISTSearch/',sep="")
+path04  <- paste(local2,'04Chem1/',sep="")
+path05  <- paste(local2,'05Chem2/',sep="")
+path06  <- paste(local2,'06Check/',sep="")
+path07  <- paste(local2,'07Structures/',sep="")
+path08  <- paste(local2,'08Output/',sep="")
+
+
+if (!dir.exists(path03))  {dir.create(path03)}
+if (!dir.exists(path04))  {dir.create(path04)}
+if (!dir.exists(path05))  {dir.create(path05)}
+if (!dir.exists(path06))  {dir.create(path06)}
+if (!dir.exists(path07))  {dir.create(path07)}
+if (!dir.exists(path08))  {dir.create(path08)}
+
+
+except <- c('except','has','wants',
+            'local1','local2',
+            'path01','path02','path03','path04','path05','path06','path07','path08',
+            'NISTlib')
+```
+
+
+#(1) Process MS file (.csv) by searching NIST MS library
+```{r}
+rm(list= ls()[!(ls() %in% except)])
+source(paste(local1,"03Rscript/functions.R",sep=''))
+
+filenames <- list.files(path=path01,pattern = '.csv')
+#filenames <- filenames[!(filenames %in% list.files(path=path03,pattern = '.csv'))]
+
+for (i in 1:length(filenames)) {
+  a1 <- paste(path01,filenames[i],sep=''); a2 <- read.csv(a1,header=F,sep=',',stringsAsFactors=F)
+  
+  
+  # peak identification
+  p <- PeakIdentify(a2); p1 <- p$p1; p2 <- p$p2; p3 <- p$p3
+  
+  
+  # plot
+  tiff(filename=paste(path03,gsub('.csv','.tif',filenames[i]),sep="/"),compression='lzw',
+       width=12,height=8,units='in',res=300,pointsize=22)
+  par(mfrow=c(2,1),mar=c(0,0,0.5,0)+0.5,oma=c(2,2,0,0)+0.1)
+  plot(as.numeric(p1$time),p1$abundance,type='l',col='black',xaxt='n')
+  lines(as.numeric(p1$time),p1$baseline,type='l',col='red')
+  #lines(as.numeric(p1$time),p1$baseline*3,type='l',col='red')
+  text(max(as.numeric(p1$time))*0.4,max(p1$abundance)*0.9,pos=4,labels="(a) Original spectrum")
+  
+  plot(as.numeric(p1$time),p1$corrected,type='l',col='black')
+  lines(as.numeric(p1$time),matrix(0,nrow=nrow(p1),ncol=1),type='l',col='red')
+  lines(as.numeric(p1$time),matrix(mean(p1$corrected)*3,nrow=nrow(p1),ncol=1),type='l',col='blue')
+  points(as.numeric(p3$time),p3$corrected,col='red',pch=20,cex=.2)
+  text(max(as.numeric(p1$time))*0.4,max(p1$corrected)*0.9,pos=4,
+       labels=paste("(b) Baseline corrected spectrum (",nrow(p3),")",sep=''))
+  dev.off()
+  
+  
+  # NIST Search
+  numofchem <- 20
+  ot1 <- as.data.frame(matrix(nrow=0,ncol=11))
+  for (j in (1:nrow(p3))) {
+    idx <- as.numeric(rownames(p3)[j]) + 1
+    b1 <- a2[idx,]
+    
+    d <- data.frame(t(rbind(a2[1,4:ncol(a2)],b1[1,4:ncol(a2)])))
+    if (sum(d[,2])!=0) {
+      rownames(d) <- NULL
+      d <- cbind('spectrum a',d)
+      #plot(d,type='l')
+      colnames(d) <- c('filename','mz','intensity')
+      metadata <- data.frame(filename = c("Spectrum A"),
+                             compound = c("Compound A"))
+      WriteMspFile(spectra=d,metadata=metadata,filename=paste(path02,"library.msp",sep=''),comment="")
+      m <- SearchNIST2(path02)
+      m <- m[1:numofchem,]
+    } else {
+      m <- matrix(NA,nrow=numofchem,ncol=10) 
+    }
+    n <- data.frame(cbind(rep(p3[j,]$time,times=nrow(m)),m),stringsAsFactors=F)
+    colnames(n) <- c('RetentionTime','Hit','chem','formula','MF','RMF','Prob','CAS','MW','Lib','ID')
+    n[,1] <- as.numeric(as.character(n[,1]))
+    ot1 <- rbind(ot1,n)
+
+    #n <- t(m)
+    #p3[j,(ncol(p1)+1):(ncol(p3)-3)] <- n
+    print(paste('NIST Search: ',j,'/',nrow(p3),'/',i,'/',length(filenames),sep=''))
+  }
+  
+  write.csv(ot1,paste(path03,filenames[i],sep=''),row.names=FALSE)
+  
+}
+```
+
+
+#(2) Process MS file (.csv) by peak quantification - using highest similarity in seletcting compounds
+```{r}
+rm(list= ls()[!(ls() %in% except)])
+source(paste(local1,"03Rscript/functions.R",sep=''))
+
+filenames <- list.files(path=path01)
+
+for (i in 1:length(filenames)) {
+  a1 <- paste(path01,filenames[i],sep=''); a2 <- read.csv(a1,header=F,sep=',',stringsAsFactors=F)
+  
+  
+  # peak identification
+  p <- PeakIdentify(a2); p1 <- p$p1; p2 <- p$p2; p3 <- p$p3
+  
+  
+  # Chemical at each peak
+  b1 <- paste(path03,filenames[i],sep='')
+  b2 <- read.csv(b1,header=T,stringsAsFactors=F)
+  addcol <- t(colnames(b2)[2:ncol(b2)])
+  p3[,addcol] <- NA
+  for (j in 1:nrow(p3)) {
+    c1 <- b2[which(b2$RetentionTime==as.numeric(p3[j,]$time)),]
+    if (!is.integer0(which(!is.na(c1$Hit)))) {
+      p3[j,(ncol(p3)-length(addcol)+1):(ncol(p3))] <- c1[which(c1$Hit=='Hit 1'),2:ncol(c1)]
+    }
+  }
+
+  write.csv(p3, paste(path04,filenames[i],sep=''))
+  print(paste('Peak Chem: ',i,'/',length(filenames),sep=''))
+}
+
+
+# Retention Time
+RTSummary(local2,path04,path08,'chem1')
+```
+
+
+#(3) Check the compound lists and MySQL connections
+```{r}
+rm(list= ls()[!(ls() %in% except)])
+source(paste(local1,"03Rscript/functions.R",sep=''))
+
+RTSummary(local2,path04,path08,'chem1')
+
+fdpos <- gregexpr('/',local2)[[1]]
+foldername <- substr(local2,fdpos[length(fdpos)-1]+1,fdpos[length(fdpos)]-1)
+
+filenames <- list.files(path=path01)
+
+#dbListConnections(MySQL())
+all_cons <- dbListConnections(MySQL()); for(con in all_cons) {dbDisconnect(con)}
+con <- dbConnect(MySQL(), user="huanc", password="205090", dbname='dom', host="localhost")
+
+xfln <- paste(local2,foldername,'_compound_list.xlsx',sep='')
+complist <- openxlsx::read.xlsx(xlsxFile = xfln,sheet = 'Sheet1', colNames = T, rowNames = F)
+complist[duplicated(complist$Compounds),]
+check1 <- CheckCompList(complist)
+if (sum(check1)!=0) {check1[which(check1[,1]==1 | check1[,2]==1),]}
+```
+
+
+#(4) Process MS file (.csv) by peak quantification - using the compound lists as references in selecting compounds
+```{r}
+rm(list= ls()[!(ls() %in% except)])
+source(paste(local1,"03Rscript/functions.R",sep=''))
+
+fdpos <- gregexpr('/',local2)[[1]]
+foldername <- substr(local2,fdpos[length(fdpos)-1]+1,fdpos[length(fdpos)]-1)
+
+filenames <- list.files(path=path01)
+
+#dbListConnections(MySQL())
+all_cons <- dbListConnections(MySQL()); for(con in all_cons) {dbDisconnect(con)}
+con <- dbConnect(MySQL(), user="huanc", password="205090", dbname='dom', host="localhost")
+
+xfln <- paste(local2,foldername,'_compound_list.xlsx',sep='')
+complist <- openxlsx::read.xlsx(xlsxFile = xfln,sheet = 'Sheet1', colNames = T, rowNames = F)
+#complist[duplicated(complist$Compounds),]
+#check1 <- CheckCompList(complist)
+#if (sum(check1)!=0) {check1[which(check1[,1]==1 | check1[,2]==1),]}
+
+
+file.remove(file.path(path05, list.files(path05)))
+
+
+for (i in 1:length(filenames)) {
+  a1 <- paste(path01,filenames[i],sep=''); a2 <- read.csv(a1,header=F,sep=',',stringsAsFactors=F)
+  a3 <- paste(path04,filenames[i],sep=''); a4 <- read.csv(a3,header=T,sep=',',stringsAsFactors=F)
+
+  
+  # peak identification
+  p <- PeakIdentify(a2); p1 <- p$p1; p2 <- p$p2; p3 <- p$p3
+  
+  
+  # Chemical at each peak
+  b1 <- paste(path03,filenames[i],sep='')
+  b2 <- read.csv(b1,header=T,stringsAsFactors=F)
+  addcol <- cbind(t(colnames(b2)[2:ncol(b2)]),'MajorP','area1','area2')
+  p3[,addcol] <- NA
+  p3$time <- as.numeric(p3$time)
+  for (j in 1:nrow(p3)) {
+    c1 <- b2[which(b2$RetentionTime==p3[j,]$time),]
+    c2 <- which(complist$rt1<=round(p3[j,]$time,3))
+    if (!is.integer0(c2)) {
+      idx1 <- c2[length(c2)]
+      idx2 <- which(c1$chem==complist[idx1,3])
+      idx3 <- which(c1$chem==complist[idx1+1,3])
+      #idx4 <- which(c1$chem==complist[idx1-1,3])
+      
+      #if (p3[j,]$time>45) {
+      #  idx5 <- which(c1$Hit=='Hit 1')
+      #}
+      if (!is.integer0(idx2) & !is.integer0(idx3)) {
+        d1 <- complist[idx1+1,1] - round(p3[j,]$time,3)
+        d2 <- round(p3[j,]$time,3) - complist[idx1,2]
+        if (d2 <= 0) {idx5 <- idx2} else if (d2 > 0 & d1 > d2) {idx5 <- idx2} else {idx5 <- idx3}
+      } else if (!is.integer0(idx2)) {
+        idx5 <- idx2
+      } else if (!is.integer0(idx3)) {
+        idx5 <- idx3
+      } else {
+        idx5 <- which(c1$Hit=='Hit 1')
+      }
+      
+      c3 <- c1[idx5,2:ncol(c1)]
+      p3[j,(ncol(p3)-length(addcol)+1):(ncol(p3)-3)] <- c3[1,]
+    }
+  }
+
+  
+  # area integration
+  for (j in (1:nrow(p3))) {
+    lindex <-hindex <- as.numeric(rownames(p3)[j])
+    while(p1[lindex,]$Lpeak==0) {lindex <- lindex - 1; if (lindex == 1) break}
+    while(p1[hindex,]$Lpeak==0) {hindex <- hindex + 1; if (hindex == nrow(p1)) break}
+    
+    if (!is.na(p3[j,]$ID)) {
+      mpk <- majorpeaks(con,p3,j)
+      p3[j,]$MajorP <- paste(mpk,collapse=",")
+      mpk <- mpk[which(mpk<=a2[1,ncol(a2)] & mpk>=a2[1,4])] # mpk should inside m/z range from MS data
+      
+      if (!identical(mpk, numeric(0))) {
+        st <- lindex+1
+        en <- hindex+1
+        x <- as.matrix(as.numeric(a2[st:en,2]))
+        if (length(mpk)>1) {
+          y <- as.matrix(rowSums(a2[st:en,as.matrix(which(a2[1,] %in% mpk)),drop=FALSE]))
+        } else {
+          y <- as.matrix(a2[st:en,as.matrix(which(a2[1,] %in% mpk))])
+        }
+        p3[j,]$area1 <- auc(x, y, thresh = 0, dens = 100) # {flux}
+        #plot(x,y)
+        
+        cx <- as.matrix(as.numeric(p1[lindex:hindex,]$time))
+        cy <- as.matrix(p1[lindex:hindex,]$corrected)
+        p3[j,]$area2 <- auc(cx, cy, thresh = 0, dens = 100)
+      }
+    }
+  }
+  write.csv(p3, paste(path05,filenames[i],sep=''))
+  
+  
+  # plot
+  y <- matrix(0,nrow = nrow(p3),ncol = 1)
+  for (j in 1:nrow(p3)) {
+    idx <- which(complist$rt1 <= p3[j,]$time & 
+                   complist$rt2 >= p3[j,]$time & 
+                   complist$Compounds == p3[j,]$chem)
+    if (!is.integer0(idx)) {y[j,1] <- 1}
+  }
+  p4 <- p3[which(y[,1]==1),]
+  if(is.null(dev.list()) == F){dev.off()}
+  tiff(filename=paste(path06,gsub('.csv','.tif',filenames[i]),sep="/"),compression='lzw',
+       width=12,height=8,units='in',res=300,pointsize=22)
+  plot(as.numeric(p1$time),p1$corrected,type='l',col='black',xlab='retention time (min)',
+       ylab = 'corrected abundance')
+  points(as.numeric(p4$time),p4$corrected,col='red',pch=20,cex=.5)
+  dev.off()
+  
+  
+  print(paste('Peak Chem: ',i,'/',length(filenames),sep=''))
+}
+
+
+dbDisconnect(con)
+
+
+# Retention Time
+RTSummary(local2,path05,path08,'chem2')
+
+```
+
+
+#(5) Comparision between compounds by two selecting methods - highest similarity VS (highest similarity and previous
+# compound lists as references)
+#'_output1.xlsx' and '_output2.xlsx'
+```{r}
+rm(list= ls()[!(ls() %in% except)])
+source(paste(local1,"03Rscript/functions.R",sep=''))
+
+fdpos <- gregexpr('/',local2)[[1]]
+foldername <- substr(local2,fdpos[length(fdpos)-1]+1,fdpos[length(fdpos)]-1)
+filenames <- list.files(path=path05,pattern='.csv')
+
+o1 <- openxlsx::read.xlsx(xlsxFile = paste(path08,foldername,'_rt_chem1.xlsx',sep=''),sheet = 'rt2')
+o2 <- openxlsx::read.xlsx(xlsxFile = paste(path08,foldername,'_rt_chem2.xlsx',sep=''),sheet = 'rt2')
+o3 <- merge(o1[,1:6],o2[,1:6],by='rt',all.x = T)
+o3$top <- NA
+
+xfln <- paste(local2,foldername,'_compound_list.xlsx',sep='')
+complist <- openxlsx::read.xlsx(xlsxFile = xfln,sheet = 'Sheet1', colNames = T, rowNames = F)
+cmplst <- complist
+cmplst[,filenames] <- NA
+for (i in 1:length(filenames)) {
+  a1 <- filenames[i]
+  a2 <- read.csv(paste(path05,a1,sep=''),header=T,stringsAsFactors = F)
+  a2 <- a2[!is.na(a2$chem),]
+  a3 <- a2[order(-a2$area2),]
+  a4 <- a3[1:ceiling(nrow(a3)*0.1),]
+  
+  idx <- which(o3$rt %in% round(a4$time,3))
+  o3[idx,]$top <- 'y'
+  
+  for (j in 1:nrow(cmplst)) {
+    b1 <- sum(a2[which(round(a2$time,3)>=cmplst[j,]$rt1 & 
+                         round(a2$time,3)<=cmplst[j,]$rt2 & 
+                         a2$chem == cmplst[j,]$Compounds),]$area1)
+    if (!is.na(b1)) {b2 <- b1} else {b2 <- 0}
+    
+    cmplst[j,i+ncol(complist)] <- b2
+  }
+}
+y <- as.data.frame(rowSums(cmplst[,(ncol(complist)+1):ncol(cmplst)] == 0))
+cmplst2 <- cmplst[which(y != (ncol(cmplst) - ncol(complist))),]
+for (i in (ncol(complist)+1):ncol(cmplst2)) {if (sum(cmplst2[,i])!=0) {cmplst[,i] <- cmplst[,i]/sum(cmplst[,i])*100}}
+
+####
+xlsxfln1 <- paste(path08,foldername,'_compound_list.xlsx',sep='')
+if (file.exists(xlsxfln1)) {file.remove(xlsxfln1)}
+if (nrow(cmplst2) != nrow(cmplst)) {
+  complist2 <- merge(complist,cmplst2,by=c('rt1','rt2','Compounds'),all.y = T,sort = F)
+  complist2 <- complist2[,1:3]
+  # {openxlsx}
+  wb <- openxlsx::createWorkbook()
+  openxlsx::addWorksheet(wb, "Sheet1")
+  openxlsx::writeData(wb, sheet = "Sheet1", complist2, colNames = TRUE)
+  openxlsx::setColWidths(wb, sheet = 'Sheet1', cols = 1:ncol(complist2), widths = "auto")
+  openxlsx::saveWorkbook(wb, xlsxfln1, overwrite = TRUE)
+}
+
+
+####
+# {openxlsx}
+wb <- openxlsx::createWorkbook()
+openxlsx::addWorksheet(wb, "chem1")
+openxlsx::writeData(wb, sheet = "chem1", o3, colNames = TRUE)
+openxlsx::saveWorkbook(wb, paste(path08,foldername,'_output1.xlsx',sep=''), overwrite = TRUE)
+
+# {XLConnect}
+wb <- XLConnect::loadWorkbook(paste(path08,foldername,'_output1.xlsx',sep=''),create=F)
+
+cs1 <- XLConnect::createCellStyle(wb)
+XLConnect::setFillBackgroundColor(cs1, color = XLC$"COLOR.GREY_25_PERCENT")
+XLConnect::setFillForegroundColor(cs1, color = XLC$"COLOR.GREY_25_PERCENT")
+XLConnect::setFillPattern(cs1, fill = XLC$"FILL.SPARSE_DOTS")
+
+cs2 <- XLConnect::createCellStyle(wb)
+XLConnect::setFillBackgroundColor(cs2, color = XLC$"COLOR.GREY_40_PERCENT")
+XLConnect::setFillForegroundColor(cs2, color = XLC$"COLOR.GREY_40_PERCENT")
+XLConnect::setFillPattern(cs2, fill = XLC$"FILL.SPARSE_DOTS")
+XLConnect::setColumnWidth(wb, sheet = "chem1", column = c(3,8), width = 10000)
+
+for (i in 1:nrow(cmplst2)) {
+  rt1 <- which(o3$rt>=cmplst2[i,1]); rt2 <- which(o3$rt<=cmplst2[i,2])
+  st <- rt1[1] + 1
+  en <- rt2[length(rt2)] + 1
+  if (i %% 2 == 1) {cellst <- cs1} else {cellst <- cs2}
+  for (j in st:en) {XLConnect::setCellStyle(wb,sheet="chem1",row=j,col=1:ncol(o3),cellstyle=cellst)}
+}
+
+XLConnect::saveWorkbook(wb)
+
+
+####
+# {openxlsx}
+wb <- openxlsx::createWorkbook()
+openxlsx::addWorksheet(wb, "chem1")
+openxlsx::writeData(wb, sheet = "chem1", cmplst2, colNames = TRUE)
+openxlsx::saveWorkbook(wb, paste(path08,foldername,'_output2.xlsx',sep=''), overwrite = TRUE)
+
+
+```
+
+
+#(6) Combine Identified Chemicals & Check peak identified or unidentified 
+#'_ms.txt'
+```{r}
+rm(list= ls()[!(ls() %in% except)])
+source(paste(local1,"03Rscript/functions.R",sep=''))
+
+fdpos <- gregexpr('/',local2)[[1]]
+foldername <- substr(local2,fdpos[length(fdpos)-1]+1,fdpos[length(fdpos)]-1)
+filenames <- list.files(path=path05,pattern='.csv')
+
+xlsxfln1 <- paste(path08,foldername,'_compound_list.xlsx',sep='')
+xlsxfln2 <- paste(local2,foldername,'_compound_list.xlsx',sep='')
+if (file.exists(xlsxfln1)) {xfln <- xlsxfln1} else {xfln <- xlsxfln2}
+complist <- openxlsx::read.xlsx(xlsxFile = xfln,sheet = 'Sheet1',colNames = T,rowNames = F)
+
+
+file.remove(file.path(path06, list.files(path06,pattern='.csv')))
+
+
+ot1 <- as.data.frame(matrix(nrow=0,ncol=20))
+for (i in 1:length(filenames)) {
+  a1 <- filenames[i]
+  a2 <- read.csv(paste(path05,a1,sep=''),header=T,stringsAsFactors = F)
+  a2[,'Identified'] <- 0 # 0 - Unidentified, 1 - Identified
+  
+  for (j in 1:nrow(a2)) {
+    b1 <- which(complist$rt1<=round(a2[j,]$time,3))
+    if (!is.integer0(b1)) {
+      b2 <- b1[length(b1)]
+      if (complist[b2,]$rt2 >= round(a2[j,]$time,3) & complist[b2,]$Compounds==a2[j,]$chem) {
+        a2[j,]$Identified <- 1
+        }
+    }
+  }
+  write.csv(a2, paste(path06,a1,sep=''))
+  
+  
+  ot2 <- as.data.frame(matrix(nrow=nrow(a2),ncol=20))
+  colnames(ot1) <- colnames(ot2) <- c('filename',colnames(a2)[c(2:5,9:22)],'areaPer')
+  ot2[,1] <- a1
+  ot2[,2:19] <- a2[,c(2:5,9:22)]
+  ot2[which(ot2$Identified==1),]$areaPer <- 
+    ot2[which(ot2$Identified==1),]$area1/sum(ot2[which(ot2$Identified==1),]$area1)*100
+  ot1 <- rbind(ot1,ot2)
+  
+  print(paste('Finished: ',i,'/',length(filenames),'/',nrow(ot2),sep=''))
+}
+write.table(ot1,paste(path08,foldername,'_ms.txt',sep=''),sep="\t",row.names=FALSE)
+```
+
+
+#(7) Classification of organics
+# '*_output3.xlsx'
+```{r}
+rm(list= ls()[!(ls() %in% except)])
+source(paste(local1,"03Rscript/functions.R",sep=''))
+
+fdpos <- gregexpr('/',local2)[[1]]
+foldername <- substr(local2,fdpos[length(fdpos)-1]+1,fdpos[length(fdpos)]-1)
+raw01 <- read.table(paste(path08,foldername,'_ms.txt',sep=''),header=T,stringsAsFactors=F)
+pahlist <- openxlsx::read.xlsx(xlsxFile = paste(local1,'02Rawdata/PAH_list.xlsx',sep=''),sheet = 'Sheet1',colNames = T)
+
+xlsxfln1 <- paste(path08,foldername,'_compound_list.xlsx',sep='')
+xlsxfln2 <- paste(local2,foldername,'_compound_list.xlsx',sep='')
+if (file.exists(xlsxfln1)) {xfln <- xlsxfln1} else {xfln <- xlsxfln2}
+complist <- openxlsx::read.xlsx(xlsxFile = xfln,sheet = 'Sheet1',colNames = T,rowNames = F)
+
+####
+all_cons <- dbListConnections(MySQL()); for(con in all_cons) {dbDisconnect(con)}
+con <- dbConnect(MySQL(), user="huanc", password="205090", dbname='dom', host="localhost")
+col <- fetch(dbSendQuery(con,"select column_name from information_schema.columns where table_name='raw01NIST' ORDER BY ordinal_position"))
+####
+raw02 <- raw01[which(raw01$Identified==1),]
+chem01 <- raw02[!duplicated(raw02[,which(colnames(raw02) %in% c('Lib','ID'))]),c(7:10,12:16)]
+
+st <- 34; en <- 108
+addindex1 <- c(as.character(col[st:en,1]))
+chem02 <- as.data.frame(matrix(0,nrow=nrow(chem01),ncol=length(addindex1)))
+struc <- as.data.frame(matrix(0,nrow=nrow(chem01),ncol=nrow(col)))
+colnames(chem02) <- addindex1
+colnames(struc) <- as.character(t(col))
+for (i in 1:nrow(chem01)) {
+  s0 <- trimws(gsub('>>','',gsub('<<','',chem01[i,]$Lib)))
+  s1 <- chem01[i,]$ID
+  sqlquery <- paste("select * from raw01NIST where DB=",s1," and library='",s0,"';",sep='')
+  sq1 <- dbSendQuery(con, sqlquery)
+  s2 <- fetch(sq1)
+  
+  struc[i,] <- s2
+  chem02[i,1:(en-st+1)] <- s2[,c(st:en)]
+  if (floor(i/100)==i/100) {print(paste(i,'/',nrow(chem01),sep=''))}
+}
+dbDisconnect(con)
+chem03 <- cbind(chem01,chem02)
+struc <- cbind(chem01,struc)
+####
+elemt <- c("H","C","N","O","S","P")
+chain <- c("RNH2","R2NH","R3N",
+           "ROPO3","ROH","RCHO","RCOR","RCOOH","RCOOR","ROR",
+           "RCCH","RCN",
+           "RINGS","AROMATIC")
+funcg <- c('SaH','UnSaH','ArH','PAH','Carb','PhC','LgC','Ntg')
+####
+colnames(chem03)
+idx1 <- which(colnames(chem03) %in% elemt | colnames(chem03) %in% chain)
+chem04 <- chem03[,c(1:9,idx1)]
+
+##
+chem04[,funcg] <- 0
+for (i in 1:nrow(chem04)) {
+  a1 <- chem03[i,10:ncol(chem03)]
+  #colnames(a1)
+  
+  if (a1$C!=0 & a1$H!=0 & sum(a1[,c(3:29,44:75)])==0) { # hydrocarbon
+    if (trimws(chem04[i,]$CAS) %in% pahlist$CAS) {
+      chem04[i,]$PAH <- 1
+    } else if (a1$AROMATIC !=0) {
+      if (a1$AROMATIC==1) {chem04[i,]$ArH <- 1} else {chem04[i,]$PAH <- 1}
+    } else if (a1$C*2+2==a1$H | a1$C*2+2==a1$H+a1$RINGS*2) {
+      chem04[i,]$SaH <- 1
+    } else {
+      chem04[i,]$UnSaH <- 1
+    } 
+  } else if (a1$C!=0 & a1$H!=0 & a1$O!=0 & sum(a1[,c(3,5:29,44:75)])==0) { # carbohydrate
+    if (a1$AROMATIC!=0 & a1$ROH!=0 & a1$ROR!=0) {
+      chem04[i,]$LgC <- 1
+    } else if (a1$AROMATIC!=0 & a1$ROH!=0) {
+      chem04[i,]$PhC <- 1
+    } else {chem04[i,]$Carb <- 1}
+  }
+  #if (a1$Cl!=0 | a1$F!=0 | a1$Br!=0) {chem04[i,]$Hal <- 1}
+  if (a1$N !=0) {chem04[i,]$Ntg <- 1}
+  
+  if (grepl('naphthalene', tolower(chem03[i,]$chem)) & chem04[i,]$ArH == 1) {
+    chem04[i,]$ArH <- 0
+    chem04[i,]$PAH <- 1
+  }
+}
+# {openxlsx}
+wb <- openxlsx::createWorkbook()
+openxlsx::addWorksheet(wb, "Uniquechem")
+openxlsx::writeData(wb, sheet = "Uniquechem", chem04, colNames = TRUE)
+openxlsx::setColWidths(wb, sheet = 'Uniquechem', cols = 1:ncol(chem04), widths = "auto")
+openxlsx::saveWorkbook(wb, paste(path08,foldername,'_output3.xlsx',sep=''), overwrite = TRUE)
+####
+y <- matrix(0,nrow = nrow(complist), ncol = 1)
+for (i in 1:nrow(complist)) {
+  idx <- which(chem04$chem == complist[i,]$Compounds)
+  if (!is.integer0(idx)) {y[i,1] <- 1}
+}
+complist2 <- complist[which(y==1),]
+criteria <- nrow(complist2) != nrow(complist) & nrow(complist2 != 0)
+criteria <- FALSE
+if (criteria) {
+  # {openxlsx}
+  wb <- openxlsx::createWorkbook()
+  openxlsx::addWorksheet(wb, "Sheet1")
+  openxlsx::writeData(wb, sheet = "Sheet1", complist2, colNames = TRUE)
+  openxlsx::setColWidths(wb, sheet = 'Sheet1', cols = 1:ncol(complist2), widths = "auto")
+  openxlsx::saveWorkbook(wb, paste(local2,foldername,'_compound_list.xlsx',sep=''), overwrite = TRUE)
+}
+####
+file.remove(file.path(path07, list.files(path07)))
+for (i in 1:nrow(complist2)) {
+  idx <- which(struc$chem==complist2[i,]$Compounds)[1]
+  
+  if (!is.na(idx)) {
+    sdfset <- ChemmineR::read.SDFset(paste(NISTlib,'sdf/',struc[idx,]$file.y,sep=''))
+    
+    posi1 <- gregexpr('_',struc[idx,]$file.y)[[1]][1]
+    posi2 <- gregexpr('-',struc[idx,]$file.y)[[1]][1]
+    stanum <- as.numeric(substr(struc[idx,]$file.y,posi1+1,posi2-1))
+    
+    a1 <- struc[idx,]$DB
+    #a2 <- as.numeric(substr(a1,nchar(a1)-2,nchar(a1)))
+    a2 <- a1 - stanum + 1
+    if (identical(struc[idx,]$chem.x,sdfid(sdfset)[a2])) {
+      a3 <- sdfset[a2]
+      a3@ID <- paste('(c',i,') ',sdfid(sdfset)[a2],sep='')
+      #a3@ID <- paste('c',i,sep='')
+      
+      
+      fln <- paste(path07,i,".tif",sep="")
+      if(is.null(dev.list()) == F){dev.off()}
+      tiff(filename=fln,compression='lzw',width=6,height=6,units='in',res=300,pointsize=22)
+      plot(a3, print=F,regenCoords=T)
+      dev.off()
+      
+      print(paste(i,'/',nrow(complist2),' (',a3@ID,')',sep=''))
+    }
+  }
+}
+```
+
+
+#(8) Output the information of products for further analysis
+# '*_output4.xlsx'
+```{r}
+rm(list= ls()[!(ls() %in% except)])
+source(paste(local1,"03Rscript/functions.R",sep=''))
+
+fdpos <- gregexpr('/',local2)[[1]]
+foldername <- substr(local2,fdpos[length(fdpos)-1]+1,fdpos[length(fdpos)]-1)
+raw01 <- read.table(paste(path08,foldername,'_ms.txt',sep=''),header=T,stringsAsFactors=F)
+chem04 <- openxlsx::read.xlsx(xlsxFile=paste(path08,foldername,'_output3.xlsx',sep=''),sheet='Uniquechem',colNames=T)
+
+xlsxfln1 <- paste(path08,foldername,'_compound_list.xlsx',sep='')
+xlsxfln2 <- paste(local2,foldername,'_compound_list.xlsx',sep='')
+if (file.exists(xlsxfln1)) {xfln <- xlsxfln1} else {xfln <- xlsxfln2}
+complist <- openxlsx::read.xlsx(xlsxFile = xfln,sheet = 'Sheet1',colNames = T,rowNames = F)
+
+####
+funcg <- c('SaH','UnSaH','ArH','PAH','Carb','PhC','LgC','Ntg')
+##
+t1 <- unique(chem04$chem)
+for (i in 1:length(t1)) {
+  a1 <- chem04[which(chem04$chem==t1[i]),(ncol(chem04)-length(funcg)+1):ncol(chem04)]
+  if (nrow(a1)>1) {if (nrow(a1[!base::duplicated(a1),])!=1) {print('FALSE')}}
+}
+####
+ot01 <- merge(raw01,chem04[,c(7:8,10:ncol(chem04))],by = c('Lib','ID'),all.x = T)
+ot01 <- ot01[order(ot01$filename,ot01$time),]
+ot01[which(ot01$Identified==0),ncol(raw01):ncol(ot01)] <- NA
+####
+chem05 <- complist
+addIDX <- c(c('formula','CAS','MW'),colnames(chem04)[9:ncol(chem04)],'Groups')
+chem05[,addIDX] <- NA
+colnames(chem05)
+for (i in 1:nrow(chem05)) {
+  a1 <- chem04[which(chem04$chem==chem05[i,]$Compounds),][1,]
+  chem05[i,]$formula <- a1$formula
+  chem05[i,]$CAS <- a1$CAS
+  chem05[i,]$MW <- a1$MW
+  chem05[i,7:(ncol(chem05)-1)] <- a1[1,9:ncol(chem04)]
+  gp <-''
+  for (j in 28:(ncol(chem05)-1)) {if (chem05[i,j]==1) {gp <- paste(gp,colnames(chem05)[j],sep=',')}}
+  if (substr(gp,1,1)==',') {chem05[i,ncol(chem05)] <- substr(gp,2,nchar(gp))}
+}
+####
+colnames(chem04)
+file <- unique(ot01$filename)
+ot02 <- as.data.frame(matrix(0,nrow=length(file),ncol=length(funcg)+2))
+colnames(ot02) <- c('filename','NumofChem',funcg)
+ot03 <- as.data.frame(matrix(0,nrow=length(file),ncol=4))
+colnames(ot03) <- c('filename',
+                    'NumofIdentifiedPeaks',
+                    'NumofUnidentifiedPeaks',
+                    'AearPer_IdentifiedPeaks')
+ot02[,1] <- ot03[,1] <- file
+for (i in 1:length(file)) {
+  a1 <- ot01[which(ot01$filename==ot02[i,]$filename & ot01$Identified==1),]
+  a2 <- a1[,(ncol(ot01)-length(funcg)+1):ncol(ot01)]
+  ot02[i,2] <- length(unique(a1$chem))
+  for (j in 1:ncol(a2)) {if (sum(a2[,j])!=0) {ot02[i,ncol(ot02)-length(funcg)+j] <- sum(a1[which(a2[,j]!=0),]$areaPer)}}
+  
+  b1 <- ot01[which(ot01$filename==ot03[i,]$filename),]
+  if (!is.integer0(which(b1$Identified==1))) {
+    ot03[i,2] <- nrow(b1[which(b1$Identified==1),])
+  } else {
+    ot03[i,2] <- 0
+  }
+  if (!is.integer0(which(b1$Identified==0))) {
+    ot03[i,3] <- nrow(b1[which(b1$Identified==0),])
+  } else {
+    ot03[i,3] <- 0
+  }
+  
+  ot03[i,4] <- sum(b1[which(b1$Identified==1),]$area2,na.rm=T)/sum(b1$area2,na.rm=T)*100
+  
+  c1 <- a1[,(which(colnames(ot01)=='areaPer')+1):(ncol(ot01)-length(funcg))]*a1$areaPer/100
+}
+
+####
+chem02 <- openxlsx::read.xlsx(xlsxFile=paste(path08,foldername,'_output2.xlsx',sep=''),
+                              sheet='chem1',colNames=T)
+ot05 <- plyr::join(chem05[,c('rt1','rt2','Groups')],chem02,
+                   by=c('rt1','rt2'),type='left',match='all')
+
+####
+# {openxlsx}
+wb <- openxlsx::createWorkbook()
+
+openxlsx::addWorksheet(wb, "chem")
+openxlsx::addWorksheet(wb, "CompoundList")
+openxlsx::addWorksheet(wb, "product")
+openxlsx::addWorksheet(wb, "Classified")
+openxlsx::addWorksheet(wb, "Identified")
+
+openxlsx::writeData(wb, sheet = "chem",         ot01,   colNames = TRUE)
+openxlsx::writeData(wb, sheet = "CompoundList", chem05, colNames = TRUE)
+openxlsx::writeData(wb, sheet = "product",      ot05,   colNames = TRUE)
+openxlsx::writeData(wb, sheet = "Classified",   ot02,   colNames = TRUE)
+openxlsx::writeData(wb, sheet = "Identified",   ot03,   colNames = TRUE)
+
+openxlsx::setColWidths(wb, sheet = 'Classified', cols = 1:ncol(ot02), widths = "auto")
+openxlsx::setColWidths(wb, sheet = 'Identified', cols = 1:ncol(ot03), widths = "auto")
+
+openxlsx::saveWorkbook(wb, paste(path08,foldername,'_output4.xlsx',sep=''), overwrite = TRUE)
+
+
+unique(chem05$Groups)
+```
+
